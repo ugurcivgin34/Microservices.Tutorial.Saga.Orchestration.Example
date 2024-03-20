@@ -1,44 +1,43 @@
+using MassTransit;
+using MongoDB.Driver;
+using Stock.API.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddMassTransit(configurator =>
+{
+
+    configurator.UsingRabbitMq((context, _configure) =>
+    {
+        _configure.Host(builder.Configuration["RabbitMQ"]);
+
+    });
+});
+
+builder.Services.AddSingleton<MongoDbService>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+using var scope = builder.Services.BuildServiceProvider().CreateScope();
+var mongoDbService = scope.ServiceProvider.GetRequiredService<MongoDbService>();
+
+// Burada, projeksiyon tipini açýkça belirterek derleyiciye niyetimizi açýklýyoruz.
+var stocksCollection = mongoDbService.GetCollection<Stock.API.Models.Stock>();
+
+// FindAsync metodunu tüm belgeleri eþleþtiren bir filtre ile kullanýyoruz ve dönüþ tipini açýkça belirtiyoruz.
+if (!await (await stocksCollection.FindAsync<Stock.API.Models.Stock>(Builders<Stock.API.Models.Stock>.Filter.Empty)).AnyAsync())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    var stockInitializationList = new List<Stock.API.Models.Stock>
+    {
+        new() { ProductId = 1, Count = 200 },
+        new() { ProductId = 2, Count = 300 },
+        new() { ProductId = 3, Count = 50 },
+        new() { ProductId = 4, Count = 10 },
+        new() { ProductId = 5, Count = 60 }
+    };
+
+    // Birden fazla dökümaný daha verimli bir þekilde eklemek için.
+    stocksCollection.InsertMany(stockInitializationList);
 }
-
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
 
 app.Run();
-
-internal record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

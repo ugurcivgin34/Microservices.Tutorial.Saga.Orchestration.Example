@@ -1,44 +1,66 @@
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+using Order.API.Context;
+using Order.API.ViewModels;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddDbContext<OrderDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("MSSQLServer")));
+builder.Services.AddMassTransit(configurator =>
+{
+
+    configurator.UsingRabbitMq((context, _configure) =>
+    {
+        _configure.Host(builder.Configuration["RabbitMQ"]);
+    });
+});
+
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
 
-app.UseHttpsRedirection();
+app.UseSwagger();
+app.UseSwaggerUI();
 
-var summaries = new[]
+app.MapPost("/create-order", async (CreateOrderVM model, OrderDbContext context, ISendEndpointProvider sendEndpointProvider) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+    Order.API.Models.Order order = new()
+    {
+        BuyerId = model.BuyerId,
+        CreatedDate = DateTime.UtcNow,
+        OrderStatus = Order.API.Enums.OrderStatus.Suspend,
+        TotalPrice = model.OrderItems.Sum(oi => oi.Count * oi.Price),
+        OrderItems = model.OrderItems.Select(oi => new Order.API.Models.OrderItem
+        {
+            Price = oi.Price,
+            Count = oi.Count,
+            ProductId = oi.ProductId,
+        }).ToList(),
+    };
 
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
+    await context.Orders.AddAsync(order);
+    await context.SaveChangesAsync();
+
+    OrderStartedEvent orderStartedEvent = new()
+    {
+        BuyerId = model.BuyerId,
+        OrderId = order.Id,
+        TotalPrice = model.OrderItems.Sum(oi => oi.Count * oi.Price),
+        OrderItems = model.OrderItems.Select(oi => new Shared.Messages.OrderItemMessage
+        {
+            Price = oi.Price,
+            Count = oi.Count,
+            ProductId = oi.ProductId
+        }).ToList()
+    };
+
+    var sendEndpoint = await sendEndpointProvider.GetSendEndpoint(new Uri($"queue:{RabbitMQSettings.StateMachineQueue}"));
+    await sendEndpoint.Send<OrderStartedEvent>(orderStartedEvent);
+
+});
 
 app.Run();
 
-internal record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
