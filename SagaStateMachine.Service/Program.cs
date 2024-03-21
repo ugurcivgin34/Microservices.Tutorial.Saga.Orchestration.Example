@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using SagaStateMachine.Service.StateDbContexts;
 using SagaStateMachine.Service.StateInstances;
 using SagaStateMachine.Service.StateMachines;
+using Shared.Settings;
 
 var builder = Host.CreateApplicationBuilder(args);
 
